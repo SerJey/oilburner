@@ -3,7 +3,8 @@
 #include "U8glib.h"
 #include "OneWire.h"
 #include "Timer.h"
-#include "rus6x13.h"
+#include "rus6x10.h"
+#include "ClickButton.h"
 
 // relays
 #define RELAY_OILPUMP   30
@@ -84,6 +85,8 @@ boolean firstStart;
 int flame;
 int attempt;
 
+ClickButton encoderBtn(ENCODER_SW, LOW, CLICKBTN_PULLUP);
+
 void encoder() {
     if (digitalRead(ENCODER_CLK))
         up = digitalRead(ENCODER_DT);
@@ -97,7 +100,6 @@ void setup() {
     //setup inputs
     pinMode(ENCODER_DT, INPUT);
     pinMode(ENCODER_CLK, INPUT);
-    pinMode(ENCODER_SW, INPUT); //encoder button
 
     pinMode(FLAME_SENSOR, INPUT_PULLUP); //with pullup resistor
 
@@ -145,6 +147,10 @@ void setup() {
     high = EEPROM.read(10);
     low = EEPROM.read(11);
     tempWaterMax = word(high, low);
+
+    encoderBtn.longClickTime = 2000;
+    encoderBtn.multiclickTime = 0;
+    encoderBtn.debounceTime = -20;
 }
 
 
@@ -155,7 +161,7 @@ void drawMenuItem(int x, int y, int draw, int selected, String text) {
         u8g.setColorIndex(0);
     }
     u8g.setPrintPos(x, y);
-    u8g.setFont(rus6x13);
+    u8g.setFont(rus6x10);
     u8g.print(text);
     if (isSetup) {
         if (draw == selected) {
@@ -198,17 +204,27 @@ void displayInfo() {
     if (ignition && attempt > 0) {
         status = String(" Поджиг:    ") + String(attempt) + String(" п.");
     }
-    String info[4] = {status, oil, inj, wat};
+    String flm = String(" Огонь:     есть");
+    if (flame) {
+        flm = String(" Огонь:     нет");
+    }
+    String oilPmp = String(" Насос:     выкл");
+    if (pompIsStarted) {
+        oilPmp = String(" Насос:     вкл");
+    }
+    String info[6] = {status, oil, inj, wat, flm, oilPmp};
     if (needsRestart) {
-        info[0] = "   ОШИБКА ПОДЖИГА!";
-        info[1] = "    ПЕРЕЗАПУСТИТЕ";
-        info[2] = "     КОНТРОЛЛЕР!";
-        info[3] = "";
+        info[0] = "";
+        info[1] = "   ОШИБКА ПОДЖИГА!";
+        info[2] = "    ПЕРЕЗАПУСТИТЕ";
+        info[3] = "     КОНТРОЛЛЕР!";
+        info[4] = "";
+        info[5] = "";
     }
     u8g.firstPage();
     do {
-        for (int i = 0; i < 4; ++i) {
-            drawMenuItem(4, (((i + 1) * 13) + 2), i, -1, info[i]);
+        for (int i = 0; i < 6; ++i) {
+            drawMenuItem(4, (((i + 1) * 10) + 1), i, -1, info[i]);
         }
     } while (u8g.nextPage());
 }
@@ -312,7 +328,10 @@ void checkFlame() { //Проверка наличия огня
 
 void loop() {
     //Read sensors
-    int encoderClick = digitalRead(ENCODER_SW);
+    int encoderClick = 0; //0 - кнопка не нажата; 1 - короткое нажатие; -1 - длительное нажатие
+    encoderBtn.Update();
+    if (encoderBtn.clicks != 0) encoderClick = encoderBtn.clicks;
+
     flame = digitalRead(FLAME_SENSOR);
     int floatLevel = digitalRead(FLOAT_LEVEL);
     int floatOverflow = digitalRead(FLOAT_OVERFLOW);
@@ -330,17 +349,17 @@ void loop() {
     }
 
     if (!floatLevel && firstStart) { //Если уровень масла низкий при первом запуске
-            if (!pompIsStarted) { //если помпа ещё не запущена
-                digitalWrite(RELAY_OILPUMP, LOW); //Включаем масляную помпу
-                pompIsStarted = true;
-                oilPompTimer.after(10 * 60 * 1000, turnOffPomp);
-            }
-            start = false;
-    } else if (firstStart){
-            digitalWrite(RELAY_OILPUMP, HIGH); // Иначе, отключаем помпу
-            firstStart = false;
-     }
-    
+        if (!pompIsStarted) { //если помпа ещё не запущена
+            digitalWrite(RELAY_OILPUMP, LOW); //Включаем масляную помпу
+            pompIsStarted = true;
+            oilPompTimer.after(10 * 60 * 1000, turnOffPomp);
+        }
+        start = false;
+    } else if (firstStart) {
+        digitalWrite(RELAY_OILPUMP, HIGH); // Иначе, отключаем помпу
+        firstStart = false;
+    }
+
     if (floatOverflow) { //если перелив
         start = false;        //отключаем всё
     }
@@ -353,21 +372,20 @@ void loop() {
         start = false;
     }
 
-       
 
     // Если процесс запущен
     if (start) {
-      
-    if (!floatLevel) { //Если уровень масла низкий
+
+        if (!floatLevel) { //Если уровень масла низкий
             if (!pompIsStarted) { //если помпа ещё не запущена
                 digitalWrite(RELAY_OILPUMP, LOW); //Включаем масляную помпу
                 pompIsStarted = true;
                 oilPompTimer.after(10 * 60 * 1000, turnOffPomp);
             }
-    } else {
+        } else {
             digitalWrite(RELAY_OILPUMP, HIGH); // Иначе, отключаем помпу
-    }
-    
+        }
+
         if (tOil != 0 && tOil < tempOilMin) { //Если температура масла низкая
             digitalWrite(RELAY_HEATING, LOW); //включаем подогрев
 
@@ -375,8 +393,9 @@ void loop() {
             digitalWrite(RELAY_HEATING, HIGH); // отключаем подогрев
             firstOilHeating = false;
         }
-        if ((tOil < tempOilMax && tOil > tempOilMin && !firstOilHeating) || //если первый прогрев масла уже был, то запускаем поджиг если температура масла между max и min
-                (tOil > tempOilMax)) {                   //либо ждём максимального прогрева масла
+        if ((tOil < tempOilMax && tOil > tempOilMin && !firstOilHeating) ||
+            //если первый прогрев масла уже был, то запускаем поджиг если температура масла между max и min
+            (tOil > tempOilMax)) {                   //либо ждём максимального прогрева масла
 
             if (needsRestart) { //Если поджиг не удался
                 digitalWrite(RELAY_FAN, HIGH); //Отключаем вентилятор
@@ -405,7 +424,7 @@ void loop() {
         }
     } else { //Если нет условий для процесса, выключаем всё
         if (!firstStart) {
-          digitalWrite(RELAY_OILPUMP, HIGH);
+            digitalWrite(RELAY_OILPUMP, HIGH);
         }
         digitalWrite(RELAY_HEATING, HIGH);
         digitalWrite(RELAY_INJECTOR, HIGH);
@@ -415,8 +434,8 @@ void loop() {
     }
 
 
-    if (!encoderClick && isInfo) {
-        encoderClick = HIGH;
+    if (encoderClick == -1 && isInfo) {
+        encoderClick = 0;
         isInfo = false;
         isMainMenu = true;
     }
@@ -436,8 +455,8 @@ void loop() {
         if (selectedMenu > 3) selectedMenu = 0;
         if (selectedMenu < 0) selectedMenu = 3;
         displayMenu();
-        if (!encoderClick) {
-            encoderClick = HIGH;
+        if (encoderClick == 1) {
+            encoderClick = 0;
             if (selectedMenu == 3) {
                 isInfo = true;
                 isMainMenu = false;
@@ -472,7 +491,7 @@ void loop() {
         if (selectedSubMenu > 3) selectedSubMenu = 1;
         if (selectedSubMenu < 1) selectedSubMenu = 3;
         displaySetup(menu[selectedMenu], tempMin, tempMax);
-        if (!encoderClick && !isSetup) {
+        if (encoderClick == 1 && !isSetup) {
             if (selectedSubMenu == 3) { //если нажимаем Сохранить
                 isSetupMenu = false;
                 isMainMenu = true;
@@ -510,10 +529,10 @@ void loop() {
                     tempVal = tempMax;
                 }
                 isSetup = true;
-                encoderClick = HIGH;
+                encoderClick = 0;
             }
 
-        } else if (!encoderClick && isSetup) {
+        } else if (encoderClick == 1 && isSetup) {
             if (selectedSubMenu == 1) {
                 tempMin = tempVal;
             } else if (selectedSubMenu == 2) {
