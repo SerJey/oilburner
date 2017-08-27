@@ -8,7 +8,6 @@
 
 // relays
 #define RELAY_OILPUMP   30
-#define RELAY_INJECTOR  32
 #define RELAY_HEATING   34
 #define RELAY_FAN       36
 #define RELAY_IGNITION  38
@@ -16,7 +15,6 @@
 
 // temperature sensors
 #define TEMP_OIL        24
-#define TEMP_INJECTOR   26
 #define TEMP_WATER      28
 
 // float switches
@@ -50,7 +48,6 @@ volatile boolean isSecondPart;
 volatile boolean ignitionIsOn;
 volatile boolean heatingIsOn;
 volatile boolean fanIsOn;
-volatile boolean injectorIsOn;
 volatile boolean valveIsOn;
 volatile boolean pompIsOn;
 
@@ -59,19 +56,16 @@ U8GLIB_ST7920_128X64 u8g(LCD_E, LCD_RW, LCD_RS, U8G_PIN_NONE);
 int selectedMenu = 0;
 int selectedSubMenu = 1;
 int selectedTestMenu = 0;
-String menu[5] = {"Температура масла", "Температура форсунки", "Температура воды", "Режим тестирования", "Выход"};
+String menu[4] = {"Температура масла", "Температура воды", "Режим тестирования", "Выход"};
 int tempVal;
 int tempMin;
 int tempMax;
 
 float tOil;
-float tInjector;
 float tWater;
 
 int tempOilMin;
 int tempOilMax;
-int tempInjectorMin;
-int tempInjectorMax;
 int tempWaterMin;
 int tempWaterMax;
 
@@ -81,7 +75,6 @@ Timer ignitionTimer;
 Timer oilPompTimer;
 
 OneWire oilSensor(TEMP_OIL);
-OneWire injectorSensor(TEMP_INJECTOR);
 OneWire waterSensor(TEMP_WATER);
 
 boolean ignition;
@@ -123,7 +116,6 @@ void setup() {
     pinMode(FLOAT_OVERFLOW, INPUT_PULLUP); //with pullup resistor
 
     pinMode(RELAY_OILPUMP, OUTPUT);
-    pinMode(RELAY_INJECTOR, OUTPUT);
     pinMode(RELAY_HEATING, OUTPUT);
     pinMode(RELAY_FAN, OUTPUT);
     pinMode(RELAY_IGNITION, OUTPUT);
@@ -151,12 +143,6 @@ void setup() {
     high = EEPROM.read(2);
     low = EEPROM.read(3);
     tempOilMax = word(high, low);
-    high = EEPROM.read(4);
-    low = EEPROM.read(5);
-    tempInjectorMin = word(high, low);
-    high = EEPROM.read(6);
-    low = EEPROM.read(7);
-    tempInjectorMax = word(high, low);
     high = EEPROM.read(8);
     low = EEPROM.read(9);
     tempWaterMin = word(high, low);
@@ -242,7 +228,6 @@ void displaySetup(String menuItem, int min, int max) {
 
 void displayInfo() {
     String oil = String(" Масло:     ") + String(tOil) + String("`C");
-    String inj = String(" Форсунка:  ") + String(tInjector) + String("`C");
     String wat = String(" Вода:      ") + String(tWater) + String("`C");
     String status = "       CТАТУС";
     if (ignition && attempt > 0) {
@@ -256,7 +241,7 @@ void displayInfo() {
     if (pompIsOn) {
         oilPmp = String(" Насос:     вкл");
     }
-    String info[6] = {status, oil, inj, wat, flm, oilPmp};
+    String info[6] = {status, oil, wat, flm, oilPmp};
     if (needsRestart) {
         info[0] = "";
         info[1] = "   ОШИБКА ПОДЖИГА!";
@@ -307,10 +292,6 @@ void getTemp() {
         oilSensor.skip();
         oilSensor.write(0x44);        // start conversion, use ds.write(0x44,1) with parasite power on at the end
 
-        injectorSensor.reset();
-        injectorSensor.skip();
-        injectorSensor.write(0x44);
-
         waterSensor.reset();
         waterSensor.skip();
         waterSensor.write(0x44);
@@ -324,11 +305,6 @@ void getTemp() {
         oilSensor.skip();
         oilSensor.write(0xBE);         // Read Scratchpad
         tOil = convertTemperature(oilSensor);
-
-        injectorSensor.reset();
-        injectorSensor.skip();
-        injectorSensor.write(0xBE);
-        tInjector = convertTemperature(injectorSensor);
 
         waterSensor.reset();
         waterSensor.skip();
@@ -378,16 +354,6 @@ void turnOnFan() {
 void turnOffFan() {
     fanIsOn = false;
     digitalWrite(RELAY_FAN, HIGH); //отключаем вентилятор
-}
-
-void turnOnInjector() {
-    injectorIsOn = true;
-    digitalWrite(RELAY_INJECTOR, LOW); //включаем форсунку
-}
-
-void turnOffInjector() {
-    injectorIsOn = false;
-    digitalWrite(RELAY_INJECTOR, HIGH); //отключаем форсунку
 }
 
 void turnOnHeating() {
@@ -459,10 +425,6 @@ void loop() {
             start = false;        //отключаем всё
         }
 
-        if (tInjector > 125) { // Если температура форсунки превышает 125 градусов
-            start = false;
-        }
-
         if (tOil > 125) { // Если температура масла превышает 125 градусов
             start = false;
         }
@@ -511,17 +473,11 @@ void loop() {
                 }
             }
 
-            if (tInjector != 0 && tInjector < tempInjectorMin) { //Если температура форсунки упала
-                turnOnInjector();               //включаем реле форсунки
-            } else if (tInjector != 0 && tInjector > tempInjectorMax) { //Если форсунка прогрета
-                turnOffInjector(); //отключаем реле форсунки
-            }
         } else { //Если нет условий для процесса, выключаем всё
             if (!firstStart) {
                 turnOffPomp();
             }
             turnOffHeating();
-            turnOffInjector();
             turnOffIgnition();
             turnOffFan();
             turnOffValve();
@@ -543,7 +499,6 @@ void loop() {
         turnOffIgnition();
         turnOffFan();
         turnOffHeating();
-        turnOffInjector();
         turnOffPomp();
         if (TurnDetected) {
             if (up)
@@ -552,18 +507,18 @@ void loop() {
                 selectedMenu--;
             TurnDetected = false;
         }
-        if (selectedMenu > 4) selectedMenu = 0;
-        if (selectedMenu < 0) selectedMenu = 4;
+        if (selectedMenu > 3) selectedMenu = 0;
+        if (selectedMenu < 0) selectedMenu = 3;
         displayMenu();
         if (encoderClick == 1) {
             encoderClick = 0;
-            if (selectedMenu == 4) {
+            if (selectedMenu == 3) {
                 isInfo = true;
                 isMainMenu = false;
                 isSetupMenu = false;
                 isSetup = false;
                 isTestMenu = false;
-            } else if (selectedMenu == 3) {
+            } else if (selectedMenu == 2) {
                 isSetupMenu = false;
                 isMainMenu = false;
                 isTestMenu = true;
@@ -574,10 +529,7 @@ void loop() {
                 if (selectedMenu == 0) { //если настраиваем температуру масла
                     tempMin = tempOilMin;
                     tempMax = tempOilMax;
-                } else if (selectedMenu == 1) { // если настраиваем температуру форсунки
-                    tempMin = tempInjectorMin;
-                    tempMax = tempInjectorMax;
-                } else if (selectedMenu == 2) { //если настраиваем температуру воды
+                } else if (selectedMenu == 1) { //если настраиваем температуру воды
                     tempMin = tempWaterMin;
                     tempMax = tempWaterMax;
                 }
@@ -593,12 +545,11 @@ void loop() {
                 selectedTestMenu--;
             TurnDetected = false;
         }
-        if (selectedTestMenu > 6) selectedTestMenu = 0;
-        if (selectedTestMenu < 0) selectedTestMenu = 6;
+        if (selectedTestMenu > 5) selectedTestMenu = 0;
+        if (selectedTestMenu < 0) selectedTestMenu = 5;
 
-        String testMenu[7] = {
+        String testMenu[6] = {
                 "Помпа        " + String(pompIsOn ? "вкл" : "выкл"),
-                "Форсунка     " + String(injectorIsOn ? "вкл" : "выкл"),
                 "Тен          " + String(heatingIsOn ? "вкл" : "выкл"),
                 "Вентилятор   " + String(fanIsOn ? "вкл" : "выкл"),
                 "Поджиг       " + String(ignitionIsOn ? "вкл" : "выкл"),
@@ -608,7 +559,7 @@ void loop() {
         displayTestMenu(testMenu);
         if (encoderClick == 1) {
             encoderClick = 0;
-            if (selectedTestMenu == 6) {
+            if (selectedTestMenu == 5) {
                 isMainMenu = true;
                 isTestMenu = false;
             } else if (selectedTestMenu == 0) {
@@ -618,30 +569,24 @@ void loop() {
                     turnOnPomp();
                 }
             } else if (selectedTestMenu == 1) {
-                if (injectorIsOn) {
-                    turnOffInjector();
-                } else {
-                    turnOnInjector();
-                }
-            } else if (selectedTestMenu == 2) {
                 if (heatingIsOn) {
                     turnOffHeating();
                 } else {
                     turnOnHeating();
                 }
-            } else if (selectedTestMenu == 3) {
+            } else if (selectedTestMenu == 2) {
                 if (fanIsOn) {
                     turnOffFan();
                 } else {
                     turnOnFan();
                 }
-            } else if (selectedTestMenu == 4) {
+            } else if (selectedTestMenu == 3) {
                 if (ignitionIsOn) {
                     turnOffIgnition();
                 } else {
                     turnOnIgnition();
                 }
-            } else if (selectedTestMenu == 5) {
+            } else if (selectedTestMenu == 4) {
                 if (valveIsOn) {
                     turnOffValve();
                 } else {
@@ -676,15 +621,7 @@ void loop() {
                     tempOilMax = tempMax;
                     EEPROM.write(2, highByte(tempOilMax));
                     EEPROM.write(3, lowByte(tempOilMax));
-                } else if (selectedMenu == 1) { // если настраиваем температуру форсунки
-                    tempInjectorMin = tempMin;
-                    EEPROM.write(4, highByte(tempInjectorMin));
-                    EEPROM.write(5, lowByte(tempInjectorMin));
-
-                    tempInjectorMax = tempMax;
-                    EEPROM.write(6, highByte(tempInjectorMax));
-                    EEPROM.write(7, lowByte(tempInjectorMax));
-                } else if (selectedMenu == 2) { //если настраиваем температуру воды
+                } else if (selectedMenu == 1) { //если настраиваем температуру воды
                     tempWaterMin = tempMin;
                     EEPROM.write(8, highByte(tempWaterMin));
                     EEPROM.write(9, lowByte(tempWaterMin));
@@ -730,3 +667,4 @@ void loop() {
     ignitionTimer.update();
     oilPompTimer.update();
 }
+
