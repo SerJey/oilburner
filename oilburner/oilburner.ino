@@ -42,15 +42,24 @@ volatile boolean isMainMenu;
 volatile boolean isInfo;
 volatile boolean isSetupMenu;
 volatile boolean isSetup;
+volatile boolean isTestMenu;
 
 volatile boolean isFirstPart;
 volatile boolean isSecondPart;
+
+volatile boolean ignitionIsOn;
+volatile boolean heatingIsOn;
+volatile boolean fanIsOn;
+volatile boolean injectorIsOn;
+volatile boolean valveIsOn;
+volatile boolean pompIsOn;
 
 U8GLIB_ST7920_128X64 u8g(LCD_E, LCD_RW, LCD_RS, U8G_PIN_NONE);
 
 int selectedMenu = 0;
 int selectedSubMenu = 1;
-String menu[4] = {"Температура масла", "Температура форсунки", "Температура воды", "Выход"};
+int selectedTestMenu = 0;
+String menu[5] = {"Температура масла", "Температура форсунки", "Температура воды", "Режим тестирования", "Выход"};
 int tempVal;
 int tempMin;
 int tempMax;
@@ -77,13 +86,20 @@ OneWire waterSensor(TEMP_WATER);
 
 boolean ignition;
 boolean start;
-boolean pompIsStarted;
 boolean needsRestart;
 boolean firstOilHeating;
 boolean firstStart;
 
 int flame;
 int attempt;
+
+int testFrameA = 0;
+int testFrameB = 3;
+int testDif = 0;
+
+int mainFrameA = 0;
+int mainFrameB = 3;
+int mainDif = 0;
 
 ClickButton encoderBtn(ENCODER_SW, LOW, CLICKBTN_PULLUP);
 
@@ -171,15 +187,43 @@ void drawMenuItem(int x, int y, int draw, int selected, String text) {
             u8g.setColorIndex(0);
             u8g.print(String(tempVal));
         }
-
     }
 }
 
 void displayMenu() {
     u8g.firstPage();
+    if (selectedMenu > mainFrameB) {
+        mainDif = selectedMenu - 3;
+        mainFrameB = selectedMenu;
+        mainFrameA = mainFrameB - 3;
+    }
+    if (selectedMenu < mainFrameA) {
+        mainFrameA = selectedMenu;
+        mainFrameB = mainFrameA + 3;
+        mainDif = selectedMenu;
+    }
     do {
-        for (int i = 0; i < 4; ++i) {
-            drawMenuItem(4, (((i + 1) * 13) + 2), i, selectedMenu, menu[i]);
+        for (int i = mainFrameA; i <= mainFrameB; i++) {
+            drawMenuItem(4, (((i - mainDif + 1) * 13) + 2), i, selectedMenu, menu[i]);
+        }
+    } while (u8g.nextPage());
+}
+
+void displayTestMenu(String testMenu[]) {
+    u8g.firstPage();
+    if (selectedTestMenu > testFrameB) {
+        testDif = selectedTestMenu - 3;
+        testFrameB = selectedTestMenu;
+        testFrameA = testFrameB - 3;
+    }
+    if (selectedTestMenu < testFrameA) {
+        testFrameA = selectedTestMenu;
+        testFrameB = testFrameA + 3;
+        testDif = selectedTestMenu;
+    }
+    do {
+        for (int i = testFrameA; i <= testFrameB; i++) {
+            drawMenuItem(4, ((((i - testDif) + 1) * 13) + 2), i, selectedTestMenu, testMenu[i]);
         }
     } while (u8g.nextPage());
 }
@@ -209,7 +253,7 @@ void displayInfo() {
         flm = String(" Огонь:     нет");
     }
     String oilPmp = String(" Насос:     выкл");
-    if (pompIsStarted) {
+    if (pompIsOn) {
         oilPmp = String(" Насос:     вкл");
     }
     String info[6] = {status, oil, inj, wat, flm, oilPmp};
@@ -296,19 +340,70 @@ void getTemp() {
     }
 }
 
-void turnValve() {
-    digitalWrite(RELAY_VALVE, LOW);
+void turnOnValve() {
+    valveIsOn = true;
+    digitalWrite(RELAY_VALVE, LOW); //включаем клапан
+}
+
+void turnOffValve() {
+    valveIsOn = false;
+    digitalWrite(RELAY_VALVE, HIGH); //отключаем клапан
+}
+
+void turnOnPomp() {
+    pompIsOn = true;
+    digitalWrite(RELAY_OILPUMP, LOW); //включаем помпу
 }
 
 void turnOffPomp() {
-    pompIsStarted = false;
+    pompIsOn = false;
     digitalWrite(RELAY_OILPUMP, HIGH); //отключаем помпу
 }
 
+void turnOnIgnition() {
+    ignitionIsOn = true;
+    digitalWrite(RELAY_IGNITION, LOW); //включаем поджиг
+}
+
+void turnOffIgnition() {
+    ignitionIsOn = false;
+    digitalWrite(RELAY_IGNITION, HIGH); //отключаем поджиг
+}
+
+void turnOnFan() {
+    fanIsOn = true;
+    digitalWrite(RELAY_FAN, LOW); //включаем вентилятор
+}
+
+void turnOffFan() {
+    fanIsOn = false;
+    digitalWrite(RELAY_FAN, HIGH); //отключаем вентилятор
+}
+
+void turnOnInjector() {
+    injectorIsOn = true;
+    digitalWrite(RELAY_INJECTOR, LOW); //включаем форсунку
+}
+
+void turnOffInjector() {
+    injectorIsOn = false;
+    digitalWrite(RELAY_INJECTOR, HIGH); //отключаем форсунку
+}
+
+void turnOnHeating() {
+    heatingIsOn = true;
+    digitalWrite(RELAY_HEATING, LOW); //включаем тен
+}
+
+void turnOffHeating() {
+    heatingIsOn = false;
+    digitalWrite(RELAY_HEATING, HIGH); //отключаем тен
+}
+
 void checkFlame() { //Проверка наличия огня
-    digitalWrite(RELAY_IGNITION, HIGH);
-    digitalWrite(RELAY_FAN, HIGH); //Отключаем вентилятор
-    digitalWrite(RELAY_VALVE, HIGH); //Отключаем клапан
+    turnOffIgnition();
+    turnOffFan(); //Отключаем вентилятор
+    turnOffValve(); //Отключаем клапан
     if (attempt < 5) { //Если попыток меньше 5
         if (flame) { //если нету огня
             ignition = false;
@@ -316,8 +411,8 @@ void checkFlame() { //Проверка наличия огня
         } else { //огонь есть
             ignition = true; //деактивируем поджиг
             attempt = 0;//обнуляем попытки
-            digitalWrite(RELAY_FAN, LOW); //Включаем вентилятор
-            digitalWrite(RELAY_VALVE, LOW); //Включаем клапан
+            turnOnFan(); //Включаем вентилятор
+            turnOnValve(); //Включаем клапан
         }
     } else {
         needsRestart = true;
@@ -336,103 +431,102 @@ void loop() {
     int floatLevel = digitalRead(FLOAT_LEVEL);
     int floatOverflow = digitalRead(FLOAT_OVERFLOW);
 
+    if (isInfo) {
 
-    // Условия запуска горелки
-    if ((tWater != 0) && (tWater < tempWaterMin)) {// Если вода остыла, то запускаем процесс
-        start = true;
-    }
-
-    if (tWater > tempWaterMax) { //если вода нагрелась
-        start = false;  //отключаем всё
-        ignition = false;
-        firstOilHeating = true; //при следующем старте будем ждать прогрева масла
-    }
-
-    if (!floatLevel && firstStart) { //Если уровень масла низкий при первом запуске
-        if (!pompIsStarted) { //если помпа ещё не запущена
-            digitalWrite(RELAY_OILPUMP, LOW); //Включаем масляную помпу
-            pompIsStarted = true;
-            oilPompTimer.after(10 * 60 * 1000, turnOffPomp);
+        // Условия запуска горелки
+        if ((tWater != 0) && (tWater < tempWaterMin)) {// Если вода остыла, то запускаем процесс
+            start = true;
         }
-        start = false;
-    } else if (firstStart) {
-        digitalWrite(RELAY_OILPUMP, HIGH); // Иначе, отключаем помпу
-        firstStart = false;
-    }
 
-    if (floatOverflow) { //если перелив
-        start = false;        //отключаем всё
-    }
+        if (tWater > tempWaterMax) { //если вода нагрелась
+            start = false;  //отключаем всё
+            ignition = false;
+            firstOilHeating = true; //при следующем старте будем ждать прогрева масла
+        }
 
-    if (tInjector > 125) { // Если температура форсунки превышает 125 градусов
-        start = false;
-    }
-
-    if (tOil > 125) { // Если температура масла превышает 125 градусов
-        start = false;
-    }
-
-
-    // Если процесс запущен
-    if (start) {
-
-        if (!floatLevel) { //Если уровень масла низкий
-            if (!pompIsStarted) { //если помпа ещё не запущена
-                digitalWrite(RELAY_OILPUMP, LOW); //Включаем масляную помпу
-                pompIsStarted = true;
+        if (!floatLevel && firstStart) { //Если уровень масла низкий при первом запуске
+            if (!pompIsOn) { //если помпа ещё не запущена
+                turnOnPomp(); //Включаем масляную помпу
                 oilPompTimer.after(10 * 60 * 1000, turnOffPomp);
             }
-        } else {
-            digitalWrite(RELAY_OILPUMP, HIGH); // Иначе, отключаем помпу
+            start = false;
+        } else if (firstStart) {
+            turnOffPomp(); // Иначе, отключаем помпу
+            firstStart = false;
         }
 
-        if (tOil != 0 && tOil < tempOilMin) { //Если температура масла низкая
-            digitalWrite(RELAY_HEATING, LOW); //включаем подогрев
-
-        } else if (tOil != 0 && tOil > tempOilMax) { //Если температура масла достигла максимума
-            digitalWrite(RELAY_HEATING, HIGH); // отключаем подогрев
-            firstOilHeating = false;
+        if (floatOverflow) { //если перелив
+            start = false;        //отключаем всё
         }
-        if ((tOil < tempOilMax && tOil > tempOilMin && !firstOilHeating) ||
-            //если первый прогрев масла уже был, то запускаем поджиг если температура масла между max и min
-            (tOil > tempOilMax)) {                   //либо ждём максимального прогрева масла
 
-            if (needsRestart) { //Если поджиг не удался
-                digitalWrite(RELAY_FAN, HIGH); //Отключаем вентилятор
-                digitalWrite(RELAY_VALVE, HIGH); //Отключаем клапан
+        if (tInjector > 125) { // Если температура форсунки превышает 125 градусов
+            start = false;
+        }
+
+        if (tOil > 125) { // Если температура масла превышает 125 градусов
+            start = false;
+        }
+
+
+        // Если процесс запущен
+        if (start) {
+
+            if (!floatLevel) { //Если уровень масла низкий
+                if (!pompIsOn) { //если помпа ещё не запущена
+                    turnOnPomp(); //Включаем масляную помпу
+                    oilPompTimer.after(10 * 60 * 1000, turnOffPomp);
+                }
+            } else {
+                turnOffPomp(); // Иначе, отключаем помпу
             }
-            if (!ignition) { //Если поджиг не активирован
-                ignition = true; //активируем
-                attempt++; // считаем попытки поджига
-                digitalWrite(RELAY_FAN, LOW); //включаем вентилятор
-                digitalWrite(RELAY_IGNITION, LOW); //включаем реле поджига
-                digitalWrite(RELAY_VALVE, HIGH); //выключаем клапан
-                funTimer.after(5 * 1000, turnValve); //через 5 секунд включим клапан
-                ignitionTimer.after(10 * 1000, checkFlame); //через 10 секунд проверим наличие пламя
+
+            if (tOil != 0 && tOil < tempOilMin) { //Если температура масла низкая
+                turnOnHeating(); //включаем подогрев
+
+            } else if (tOil != 0 && tOil > tempOilMax) { //Если температура масла достигла максимума
+                turnOffHeating(); // отключаем подогрев
+                firstOilHeating = false;
             }
-            if (ignition && attempt == 0) {
-                if (flame) { //если нету огня
-                    ignition = false; //сообщаем системе, что снова нужен поджиг
+            if ((tOil < tempOilMax && tOil > tempOilMin && !firstOilHeating) ||
+                //если первый прогрев масла уже был, то запускаем поджиг если температура масла между max и min
+                (tOil > tempOilMax)) {                   //либо ждём максимального прогрева масла
+
+                if (needsRestart) { //Если поджиг не удался
+                    turnOffFan(); //Отключаем вентилятор
+                    turnOffValve(); //Отключаем клапан
+                }
+                if (!ignition) { //Если поджиг не активирован
+                    ignition = true; //активируем
+                    attempt++; // считаем попытки поджига
+                    turnOnFan(); //включаем вентилятор
+                    turnOnIgnition(); //включаем реле поджига
+                    turnOffValve(); //выключаем клапан
+                    funTimer.after(5 * 1000, turnOnValve); //через 5 секунд включим клапан
+                    ignitionTimer.after(10 * 1000, checkFlame); //через 10 секунд проверим наличие пламя
+                }
+                if (ignition && attempt == 0) {
+                    if (flame) { //если нету огня
+                        ignition = false; //сообщаем системе, что снова нужен поджиг
+                    }
                 }
             }
-        }
 
-        if (tInjector != 0 && tInjector < tempInjectorMin) { //Если температура форсунки упала
-            digitalWrite(RELAY_INJECTOR, LOW);               //включаем реле форсунки
-        } else if (tInjector != 0 && tInjector > tempInjectorMax) { //Если форсунка прогрета
-            digitalWrite(RELAY_INJECTOR, HIGH); //отключаем реле форсунки
+            if (tInjector != 0 && tInjector < tempInjectorMin) { //Если температура форсунки упала
+                turnOnInjector();               //включаем реле форсунки
+            } else if (tInjector != 0 && tInjector > tempInjectorMax) { //Если форсунка прогрета
+                turnOffInjector(); //отключаем реле форсунки
+            }
+        } else { //Если нет условий для процесса, выключаем всё
+            if (!firstStart) {
+                turnOffPomp();
+            }
+            turnOffHeating();
+            turnOffInjector();
+            turnOffIgnition();
+            turnOffFan();
+            turnOffValve();
         }
-    } else { //Если нет условий для процесса, выключаем всё
-        if (!firstStart) {
-            digitalWrite(RELAY_OILPUMP, HIGH);
-        }
-        digitalWrite(RELAY_HEATING, HIGH);
-        digitalWrite(RELAY_INJECTOR, HIGH);
-        digitalWrite(RELAY_IGNITION, HIGH);
-        digitalWrite(RELAY_FAN, HIGH);
-        digitalWrite(RELAY_VALVE, HIGH);
     }
-
 
     if (encoderClick == -1 && isInfo) {
         encoderClick = 0;
@@ -445,6 +539,12 @@ void loop() {
     }
 
     if (isMainMenu) {
+        turnOffValve();
+        turnOffIgnition();
+        turnOffFan();
+        turnOffHeating();
+        turnOffInjector();
+        turnOffPomp();
         if (TurnDetected) {
             if (up)
                 selectedMenu++;
@@ -452,19 +552,25 @@ void loop() {
                 selectedMenu--;
             TurnDetected = false;
         }
-        if (selectedMenu > 3) selectedMenu = 0;
-        if (selectedMenu < 0) selectedMenu = 3;
+        if (selectedMenu > 4) selectedMenu = 0;
+        if (selectedMenu < 0) selectedMenu = 4;
         displayMenu();
         if (encoderClick == 1) {
             encoderClick = 0;
-            if (selectedMenu == 3) {
+            if (selectedMenu == 4) {
                 isInfo = true;
                 isMainMenu = false;
                 isSetupMenu = false;
                 isSetup = false;
+                isTestMenu = false;
+            } else if (selectedMenu == 3) {
+                isSetupMenu = false;
+                isMainMenu = false;
+                isTestMenu = true;
             } else {
                 isSetupMenu = true;
                 isMainMenu = false;
+                isTestMenu = false;
                 if (selectedMenu == 0) { //если настраиваем температуру масла
                     tempMin = tempOilMin;
                     tempMax = tempOilMax;
@@ -476,8 +582,74 @@ void loop() {
                     tempMax = tempWaterMax;
                 }
             }
-
         }
+    }
+
+    if (isTestMenu) {
+        if (TurnDetected && !isSetup) {
+            if (up)
+                selectedTestMenu++;
+            else
+                selectedTestMenu--;
+            TurnDetected = false;
+        }
+        if (selectedTestMenu > 6) selectedTestMenu = 0;
+        if (selectedTestMenu < 0) selectedTestMenu = 6;
+
+        String testMenu[7] = {
+                "Помпа        " + String(pompIsOn ? "вкл" : "выкл"),
+                "Форсунка     " + String(injectorIsOn ? "вкл" : "выкл"),
+                "Тен          " + String(heatingIsOn ? "вкл" : "выкл"),
+                "Вентилятор   " + String(fanIsOn ? "вкл" : "выкл"),
+                "Поджиг       " + String(ignitionIsOn ? "вкл" : "выкл"),
+                "Клапан       " + String(valveIsOn ? "вкл" : "выкл"),
+                "Выход"};
+
+        displayTestMenu(testMenu);
+        if (encoderClick == 1) {
+            encoderClick = 0;
+            if (selectedTestMenu == 6) {
+                isMainMenu = true;
+                isTestMenu = false;
+            } else if (selectedTestMenu == 0) {
+                if (pompIsOn) {
+                    turnOffPomp();
+                } else {
+                    turnOnPomp();
+                }
+            } else if (selectedTestMenu == 1) {
+                if (injectorIsOn) {
+                    turnOffInjector();
+                } else {
+                    turnOnInjector();
+                }
+            } else if (selectedTestMenu == 2) {
+                if (heatingIsOn) {
+                    turnOffHeating();
+                } else {
+                    turnOnHeating();
+                }
+            } else if (selectedTestMenu == 3) {
+                if (fanIsOn) {
+                    turnOffFan();
+                } else {
+                    turnOnFan();
+                }
+            } else if (selectedTestMenu == 4) {
+                if (ignitionIsOn) {
+                    turnOffIgnition();
+                } else {
+                    turnOnIgnition();
+                }
+            } else if (selectedTestMenu == 5) {
+                if (valveIsOn) {
+                    turnOffValve();
+                } else {
+                    turnOnValve();
+                }
+            }
+        }
+
     }
 
     if (isSetupMenu) {
