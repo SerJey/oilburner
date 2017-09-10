@@ -104,13 +104,11 @@ int mainDif = 0;
 ClickButton encoderBtn(ENCODER_SW, LOW, CLICKBTN_PULLUP);
 
 void encoder() {
-    if (digitalRead(ENCODER_CLK))
-        up = digitalRead(ENCODER_DT);
-    else
-        up = !digitalRead(ENCODER_DT);
+    boolean a = (boolean) digitalRead(ENCODER_DT);
+    boolean b = (boolean) digitalRead(ENCODER_CLK);
+    up = a ^ b;
     TurnDetected = true;
 }
-
 
 void setup() {
     //setup inputs
@@ -129,7 +127,7 @@ void setup() {
     pinMode(RELAY_IGNITION, OUTPUT);
     pinMode(RELAY_VALVE, OUTPUT);
 
-    attachInterrupt(0, encoder, FALLING);
+    attachInterrupt(0, encoder, CHANGE);
     isInfo = true;
     isMainMenu = false;
     isSetupMenu = false;
