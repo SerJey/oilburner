@@ -37,7 +37,7 @@
 #define ENCODER_SW  4
 
 volatile boolean TurnDetected;
-volatile boolean up;
+volatile int encDif = 0;
 volatile boolean isMainMenu;
 volatile boolean isInfo;
 volatile boolean isSetupMenu;
@@ -106,7 +106,7 @@ ClickButton encoderBtn(ENCODER_SW, LOW, CLICKBTN_PULLUP);
 void encoder() {
     boolean a = (boolean) digitalRead(ENCODER_DT);
     boolean b = (boolean) digitalRead(ENCODER_CLK);
-    up = a ^ b;
+    encDif = a ^ b ? 1 : -1;
     TurnDetected = true;
 }
 
@@ -544,10 +544,7 @@ void loop() {
         turnOffInjector();
         turnOffPomp();
         if (TurnDetected) {
-            if (up)
-                selectedMenu++;
-            else
-                selectedMenu--;
+            selectedMenu += encDif;
             TurnDetected = false;
         }
         if (selectedMenu > 4) selectedMenu = 0;
@@ -585,10 +582,7 @@ void loop() {
 
     if (isTestMenu) {
         if (TurnDetected && !isSetup) {
-            if (up)
-                selectedTestMenu++;
-            else
-                selectedTestMenu--;
+            selectedTestMenu += encDif;
             TurnDetected = false;
         }
         if (selectedTestMenu > 6) selectedTestMenu = 0;
@@ -652,10 +646,7 @@ void loop() {
 
     if (isSetupMenu) {
         if (TurnDetected && !isSetup) {
-            if (up)
-                selectedSubMenu++;
-            else
-                selectedSubMenu--;
+            selectedSubMenu += encDif;
             TurnDetected = false;
         }
         if (selectedSubMenu > 3) selectedSubMenu = 1;
@@ -714,10 +705,7 @@ void loop() {
 
     if (isSetup) {
         if (TurnDetected) {
-            if (up)
-                tempVal++;
-            else
-                tempVal--;
+            tempVal += encDif;
             TurnDetected = false;
         }
     }
