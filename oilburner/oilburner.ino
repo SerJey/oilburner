@@ -5,6 +5,12 @@
 #include "Timer.h"
 #include "rus6x10.h"
 #include "ClickButton.h"
+#include "SoftwareSerial.h"
+
+// gsm library
+#define TINY_GSM_MODEM_SIM800
+
+#include "TinyGsmClient.h"
 
 // relays
 #define RELAY_OILPUMP   30
@@ -26,15 +32,18 @@
 // flame sensor
 #define FLAME_SENSOR    7
 
-//lcd
+// lcd
 #define LCD_RS  31
 #define LCD_RW  33
 #define LCD_E   35
 
-//encoder
+// encoder
 #define ENCODER_CLK 2
 #define ENCODER_DT  3
 #define ENCODER_SW  4
+
+#define GSM_RX 8
+#define GSM_TX 9
 
 volatile boolean TurnDetected;
 volatile int encDif = 0;
@@ -43,6 +52,8 @@ volatile boolean isInfo;
 volatile boolean isSetupMenu;
 volatile boolean isSetup;
 volatile boolean isTestMenu;
+volatile boolean isNotificationMenu;
+volatile boolean isPhoneSetup;
 
 volatile boolean isFirstPart;
 volatile boolean isSecondPart;
@@ -59,14 +70,30 @@ U8GLIB_ST7920_128X64 u8g(LCD_E, LCD_RW, LCD_RS, U8G_PIN_NONE);
 int selectedMenu = 0;
 int selectedSubMenu = 1;
 int selectedTestMenu = 0;
-String menu[5] = {"Температура масла", "Температура форсунки", "Температура воды", "Режим тестирования", "Выход"};
+int selectedNotifMenu = 0;
+String menu[6] = {"Температура масла", "Температура форсунки", "Температура воды", "Режим тестирования", "Оповещения",
+                  "Выход"};
 int tempVal;
 int tempMin;
 int tempMax;
 
+String phoneNumberStr = "";
+byte phoneNumber[11];
+int numSelIndex = 0;
+byte tempNum = 0;
+boolean notificationIsOn;
+
 float tOil;
 float tInjector;
 float tWater;
+float tOil5[5];
+float tInjector5[5];
+float tWater5[5];
+float tOilFiltered;
+float tInjectorFiltered;
+float tWaterFiltered;
+
+byte iter;
 
 int tempOilMin;
 int tempOilMax;
@@ -90,6 +117,8 @@ boolean needsRestart;
 boolean firstOilHeating;
 boolean firstStart;
 
+boolean isNeededSentMessage;
+
 int flame;
 int attempt;
 
@@ -102,6 +131,9 @@ int mainFrameB = 3;
 int mainDif = 0;
 
 ClickButton encoderBtn(ENCODER_SW, LOW, CLICKBTN_PULLUP);
+
+SoftwareSerial SerialAT(GSM_RX, GSM_TX); // RX, TX
+TinyGsm modem(SerialAT);
 
 void encoder() {
     boolean a = (boolean) digitalRead(ENCODER_DT);
@@ -132,6 +164,9 @@ void setup() {
     isMainMenu = false;
     isSetupMenu = false;
     isSetup = false;
+    isTestMenu = false;
+    isNotificationMenu = false;
+    isPhoneSetup = false;
 
     isFirstPart = true;
     isSecondPart = false;
@@ -141,6 +176,8 @@ void setup() {
     firstOilHeating = true;
     attempt = 0;
     firstStart = true;
+
+    isNeededSentMessage = false;
 
     //Read values from EEPROM
     byte high = EEPROM.read(0);
@@ -165,12 +202,57 @@ void setup() {
     encoderBtn.longClickTime = 2000;
     encoderBtn.multiclickTime = 0;
     encoderBtn.debounceTime = -20;
+
+    SerialAT.begin(115200);
+
+    //Read phone number
+    for (int i = 0; i < 11; i++) {
+        phoneNumber[i] = EEPROM.read(i + 12);
+    }
+    notificationIsOn = (boolean) EEPROM.read(23);
 }
 
+void getPhoneNumber() {
+    phoneNumberStr = "";
+    for (int i = 0; i < 11; i++) {
+        phoneNumberStr += String(phoneNumber[i]);
+    }
+}
+
+void saveNotificationSettings() {
+    for (int i = 0; i < 11; i++) {
+        EEPROM.write(i + 12, phoneNumber[i]);
+    }
+    EEPROM.write(23, (byte) notificationIsOn);
+}
+
+void sendSms(String message) {
+    if (notificationIsOn && isNeededSentMessage) {
+        getPhoneNumber();
+        if (modem.init()) {
+            modem.sendSMS(phoneNumberStr, message);
+            isNeededSentMessage = false;
+        }
+    }
+}
+
+void drawPhoneMenu(int x, int y) {
+    for (int i = 0; i < 11; i++) {
+        u8g.setColorIndex(1);
+        int xx = (i * 6) + x;
+        if (i == numSelIndex) {
+            u8g.drawBox(xx - 1, (y - 10), 7, 13);
+            u8g.setColorIndex(0);
+        }
+        u8g.setPrintPos(xx, y);
+        u8g.setFont(rus6x10);
+        u8g.print(phoneNumber[i]);
+    }
+}
 
 void drawMenuItem(int x, int y, int draw, int selected, String text) {
     u8g.setColorIndex(1);
-    if (draw == selected && !isSetup) {
+    if (draw == selected && !isSetup && !isPhoneSetup) {
         u8g.drawBox(2, (y - 10), 124, 13);
         u8g.setColorIndex(0);
     }
@@ -185,6 +267,9 @@ void drawMenuItem(int x, int y, int draw, int selected, String text) {
             u8g.setColorIndex(0);
             u8g.print(String(tempVal));
         }
+    }
+    if (isPhoneSetup && draw == selected) {
+        drawPhoneMenu(58, y);
     }
 }
 
@@ -226,6 +311,15 @@ void displayTestMenu(String testMenu[]) {
     } while (u8g.nextPage());
 }
 
+void displayNotificationMenu(String notifMenu[]) {
+    u8g.firstPage();
+    do {
+        for (int i = 0; i < 3; ++i) {
+            drawMenuItem(4, (((i + 1) * 13) + 2), i, selectedNotifMenu, notifMenu[i]);
+        }
+    } while (u8g.nextPage());
+}
+
 void displaySetup(String menuItem, int min, int max) {
     String minimum = String("Минимальная   ") + String(min);
     String maximum = String("Максимальная  ") + String(max);
@@ -238,7 +332,7 @@ void displaySetup(String menuItem, int min, int max) {
     } while (u8g.nextPage());
 }
 
-void displayInfo() {
+void displayInfo() { //Основной дисплей
     String oil = String(" Масло:     ") + String(tOil) + String("`C");
     String inj = String(" Форсунка:  ") + String(tInjector) + String("`C");
     String wat = String(" Вода:      ") + String(tWater) + String("`C");
@@ -246,14 +340,8 @@ void displayInfo() {
     if (ignition && attempt > 0) {
         status = String(" Поджиг:    ") + String(attempt) + String(" п.");
     }
-    String flm = String(" Огонь:     есть");
-    if (flame) {
-        flm = String(" Огонь:     нет");
-    }
-    String oilPmp = String(" Насос:     выкл");
-    if (pompIsOn) {
-        oilPmp = String(" Насос:     вкл");
-    }
+    String flm = " Огонь:     " + String(flame ? "нет" : "есть");
+    String oilPmp = " Насос:     " + String(pompIsOn ? "вкл" : "выкл");
     String info[6] = {status, oil, inj, wat, flm, oilPmp};
     if (needsRestart) {
         info[0] = "";
@@ -321,17 +409,17 @@ void getTemp() {
         oilSensor.reset();
         oilSensor.skip();
         oilSensor.write(0xBE);         // Read Scratchpad
-        tOil = convertTemperature(oilSensor);
+        tOil5[iter] = convertTemperature(oilSensor);
 
         injectorSensor.reset();
         injectorSensor.skip();
         injectorSensor.write(0xBE);
-        tInjector = convertTemperature(injectorSensor);
+        tInjector5[iter] = convertTemperature(injectorSensor);
 
         waterSensor.reset();
         waterSensor.skip();
         waterSensor.write(0xBE);
-        tWater = convertTemperature(waterSensor);
+        tWater5[iter] = convertTemperature(waterSensor);
 
         isFirstPart = true;
         isSecondPart = false;
@@ -416,10 +504,30 @@ void checkFlame() { //Проверка наличия огня
         needsRestart = true;
         ignition = true;// чтобы не запускался поджиг
     }
+}
 
+int sort_desc(const void *cmp1, const void *cmp2) {
+    float a = *((float *) cmp1);
+    float b = *((float *) cmp2);
+    return a > b ? -1 : (a < b ? 1 : 0);
+}
+
+float getFilteredValue(float values[5]) {
+    int valuesLength = sizeof(values) / sizeof(values[0]);
+    // qsort - last parameter is a function pointer to the sort function
+    qsort(values, valuesLength, sizeof(values[0]), sort_desc);
+    return values[2];
 }
 
 void loop() {
+    if (iter > 4) {
+        iter = 0;
+    } else iter++;
+
+    tOil = getFilteredValue(tOil5);
+    tWater = getFilteredValue(tWater5);
+    tInjector = getFilteredValue(tInjector5);
+
     //Read sensors
     int encoderClick = 0; //0 - кнопка не нажата; 1 - короткое нажатие; -1 - длительное нажатие
     encoderBtn.Update();
@@ -547,12 +655,12 @@ void loop() {
             selectedMenu += encDif;
             TurnDetected = false;
         }
-        if (selectedMenu > 4) selectedMenu = 0;
-        if (selectedMenu < 0) selectedMenu = 4;
+        if (selectedMenu > 5) selectedMenu = 0;
+        if (selectedMenu < 0) selectedMenu = 5;
         displayMenu();
         if (encoderClick == 1) {
             encoderClick = 0;
-            if (selectedMenu == 4) {
+            if (selectedMenu == 5) {
                 isInfo = true;
                 isMainMenu = false;
                 isSetupMenu = false;
@@ -562,6 +670,12 @@ void loop() {
                 isSetupMenu = false;
                 isMainMenu = false;
                 isTestMenu = true;
+            } else if (selectedMenu == 4) {
+                isSetupMenu = false;
+                isMainMenu = false;
+                isTestMenu = false;
+                isNotificationMenu = true;
+                getPhoneNumber();
             } else {
                 isSetupMenu = true;
                 isMainMenu = false;
@@ -641,7 +755,54 @@ void loop() {
                 }
             }
         }
+    }
 
+    if (isNotificationMenu) {
+        if (TurnDetected && !isPhoneSetup) {
+            selectedNotifMenu += encDif;
+            TurnDetected = false;
+        }
+        if (selectedNotifMenu > 2) selectedNotifMenu = 0;
+        if (selectedNotifMenu < 0) selectedNotifMenu = 2;
+        if (encoderClick == 1 && !isPhoneSetup) {
+            encoderClick = 0;
+            if (selectedNotifMenu == 0) {
+                notificationIsOn = !notificationIsOn;
+            } else if (selectedNotifMenu == 2) {
+                //save phone number and notification toggle
+                saveNotificationSettings();
+                isPhoneSetup = false;
+                isNotificationMenu = false;
+                isMainMenu = true;
+            } else if (selectedNotifMenu == 1) {
+                isPhoneSetup = true;
+                numSelIndex = 0;
+                tempNum = phoneNumber[0];
+            }
+        }
+        if (isPhoneSetup) {
+            if (TurnDetected) {
+                tempNum += encDif;
+                TurnDetected = false;
+            }
+            if (tempNum > 9) tempNum = 0;
+            if (tempNum < 0) tempNum = 9;
+            phoneNumber[numSelIndex] = tempNum;
+            if (encoderClick == 1) {
+                numSelIndex++;
+                tempNum = phoneNumber[numSelIndex];
+                if (numSelIndex > 10) {
+                    getPhoneNumber();
+                    isPhoneSetup = false;
+                }
+            }
+        }
+
+        String notifMenu[3] = {
+                "SMS оповещения: " + String(notificationIsOn ? " вкл" : "выкл"),
+                "Номер:   " + String(isPhoneSetup ? "" : phoneNumberStr),
+                "Сохранить"};
+        displayNotificationMenu(notifMenu);
     }
 
     if (isSetupMenu) {
