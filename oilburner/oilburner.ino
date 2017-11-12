@@ -5,7 +5,7 @@
 #include "Timer.h"
 #include "rus6x10.h"
 #include "ClickButton.h"
-#include "SoftwareSerial.h"
+#include "ACS712.h"
 
 // gsm library
 #define TINY_GSM_MODEM_SIM800
@@ -42,8 +42,9 @@
 #define ENCODER_DT  3
 #define ENCODER_SW  4
 
-#define GSM_RX 8
-#define GSM_TX 9
+#define SerialAT Serial1
+
+#define CURRENT_SENSOR A1
 
 volatile boolean TurnDetected;
 volatile int encDif = 0;
@@ -64,6 +65,8 @@ volatile boolean fanIsOn;
 volatile boolean injectorIsOn;
 volatile boolean valveIsOn;
 volatile boolean pompIsOn;
+
+ACS712 curSensor(ACS712_05B, CURRENT_SENSOR);
 
 U8GLIB_ST7920_128X64 u8g(LCD_E, LCD_RW, LCD_RS, U8G_PIN_NONE);
 
@@ -86,12 +89,65 @@ boolean notificationIsOn;
 float tOil;
 float tInjector;
 float tWater;
-float tOil5[5];
-float tInjector5[5];
-float tWater5[5];
-float tOilFiltered;
-float tInjectorFiltered;
-float tWaterFiltered;
+float tOil5[5] = {0.0, 0.0, 0.0, 0.0, 0.0};
+float tInjector5[5] = {0.0, 0.0, 0.0, 0.0, 0.0};
+float tWater5[5] = {0.0, 0.0, 0.0, 0.0, 0.0};
+
+boolean ignitionAlreadySent;
+boolean oilAlreadySent;
+boolean waterAlreadySent;
+boolean injectorAlreadySent;
+boolean currentAlreadySent;
+boolean currentAlreadyShown;
+boolean currentFineAlreadySent;
+
+String info[6] = {};
+String errorInfo[6] = {};
+
+String ignitionError[6] = {
+        "",
+        "   ОШИБКА ПОДЖИГА!   ",
+        "    ПЕРЕЗАПУСТИТЕ    ",
+        "     КОНТРОЛЛЕР!     ",
+        "",
+        ""
+};
+
+String oilSensorError[6] = {
+        "",
+        "       ОШИБКА!       ",
+        "   ПРОВЕРЬТЕ ДАТЧИК  ",
+        "     ТЕМПЕРАТУРЫ     ",
+        "        МАСЛА        ",
+        ""
+};
+
+String waterSensorError[6] = {
+        "",
+        "       ОШИБКА!       ",
+        "   ПРОВЕРЬТЕ ДАТЧИК  ",
+        "     ТЕМПЕРАТУРЫ     ",
+        "        ВОДЫ         ",
+        ""
+};
+
+String injectorSensorError[6] = {
+        "",
+        "       ОШИБКА!       ",
+        "   ПРОВЕРЬТЕ ДАТЧИК  ",
+        "     ТЕМПЕРАТУРЫ     ",
+        "      ФОРСУНКИ       ",
+        ""
+};
+
+String currentWarning[6] = {
+        "",
+        "      ВНИМАНИЕ!      ",
+        "    СБОЙ  СИСТЕМЫ    ",
+        "       ПИТАНИЯ       ",
+        "       ОТ СЕТИ       ",
+        ""
+};
 
 byte iter;
 
@@ -107,6 +163,8 @@ Timer funTimer;
 Timer ignitionTimer;
 Timer oilPompTimer;
 
+Timer errorCheckTimer;
+
 OneWire oilSensor(TEMP_OIL);
 OneWire injectorSensor(TEMP_INJECTOR);
 OneWire waterSensor(TEMP_WATER);
@@ -117,7 +175,13 @@ boolean needsRestart;
 boolean firstOilHeating;
 boolean firstStart;
 
-boolean isNeededSentMessage;
+byte oilCheck = 0;
+byte waterCheck = 0;
+byte injectorCheck = 0;
+byte currentCheck = 0;
+boolean isNeedCheck;
+boolean isSensorError;
+boolean isCurrentWarning;
 
 int flame;
 int attempt;
@@ -132,7 +196,6 @@ int mainDif = 0;
 
 ClickButton encoderBtn(ENCODER_SW, LOW, CLICKBTN_PULLUP);
 
-SoftwareSerial SerialAT(GSM_RX, GSM_TX); // RX, TX
 TinyGsm modem(SerialAT);
 
 void encoder() {
@@ -177,7 +240,17 @@ void setup() {
     attempt = 0;
     firstStart = true;
 
-    isNeededSentMessage = false;
+    isNeedCheck = true;
+    isSensorError = false;
+    isCurrentWarning = false;
+
+    ignitionAlreadySent = false;
+    oilAlreadySent = false;
+    waterAlreadySent = false;
+    injectorAlreadySent = false;
+    currentAlreadySent = false;
+    currentAlreadyShown = false;
+    currentFineAlreadySent = false;
 
     //Read values from EEPROM
     byte high = EEPROM.read(0);
@@ -203,6 +276,7 @@ void setup() {
     encoderBtn.multiclickTime = 0;
     encoderBtn.debounceTime = -20;
 
+    delay(5000);
     SerialAT.begin(115200);
 
     //Read phone number
@@ -210,6 +284,8 @@ void setup() {
         phoneNumber[i] = EEPROM.read(i + 12);
     }
     notificationIsOn = (boolean) EEPROM.read(23);
+
+    curSensor.calibrate();
 }
 
 void getPhoneNumber() {
@@ -226,12 +302,11 @@ void saveNotificationSettings() {
     EEPROM.write(23, (byte) notificationIsOn);
 }
 
-void sendSms(String message) {
-    if (notificationIsOn && isNeededSentMessage) {
+void sendSms(const void *text, size_t len) {
+    if (notificationIsOn) {
         getPhoneNumber();
         if (modem.init()) {
-            modem.sendSMS(phoneNumberStr, message);
-            isNeededSentMessage = false;
+            modem.sendSMS_UTF16(phoneNumberStr, text, len);
         }
     }
 }
@@ -332,6 +407,15 @@ void displaySetup(String menuItem, int min, int max) {
     } while (u8g.nextPage());
 }
 
+void fillErrorInfo(String error[]) {
+    errorInfo[0] = error[0];
+    errorInfo[1] = error[1];
+    errorInfo[2] = error[2];
+    errorInfo[3] = error[3];
+    errorInfo[4] = error[4];
+    errorInfo[5] = error[5];
+}
+
 void displayInfo() { //Основной дисплей
     String oil = String(" Масло:     ") + String(tOil) + String("`C");
     String inj = String(" Форсунка:  ") + String(tInjector) + String("`C");
@@ -342,14 +426,19 @@ void displayInfo() { //Основной дисплей
     }
     String flm = " Огонь:     " + String(flame ? "нет" : "есть");
     String oilPmp = " Насос:     " + String(pompIsOn ? "вкл" : "выкл");
-    String info[6] = {status, oil, inj, wat, flm, oilPmp};
-    if (needsRestart) {
-        info[0] = "";
-        info[1] = "   ОШИБКА ПОДЖИГА!";
-        info[2] = "    ПЕРЕЗАПУСТИТЕ";
-        info[3] = "     КОНТРОЛЛЕР!";
-        info[4] = "";
-        info[5] = "";
+    info[0] = status;
+    info[1] = oil;
+    info[2] = inj;
+    info[3] = wat;
+    info[4] = flm;
+    info[5] = oilPmp;
+    if (needsRestart || isSensorError || (isCurrentWarning && !currentAlreadyShown)) {
+        info[0] = errorInfo[0];
+        info[1] = errorInfo[1];
+        info[2] = errorInfo[2];
+        info[3] = errorInfo[3];
+        info[4] = errorInfo[4];
+        info[5] = errorInfo[5];
     }
     u8g.firstPage();
     do {
@@ -502,8 +591,87 @@ void checkFlame() { //Проверка наличия огня
         }
     } else {
         needsRestart = true;
+        fillErrorInfo(ignitionError);
+        if (!ignitionAlreadySent) {
+            sendSms(u"Поджиг не удался. Требуется перезапуск", 38);
+            ignitionAlreadySent = true;
+        }
         ignition = true;// чтобы не запускался поджиг
     }
+}
+
+void checkSensors() {
+    float current = curSensor.getCurrentDC();
+    if (current < 0.185) {
+        currentCheck++;
+    } else {
+        currentCheck = 0;
+        if (isCurrentWarning) {
+            if (!currentFineAlreadySent) {
+                sendSms(u"Питание восстановлено", 21);
+                currentFineAlreadySent = true;
+            }
+        }
+        isCurrentWarning = false;
+        currentAlreadyShown = false;
+        currentAlreadySent = false;
+    }
+    if (currentCheck > 5) {
+        isCurrentWarning = true;
+        fillErrorInfo(currentWarning);
+        if (!currentAlreadySent) {
+            sendSms(u"Сбой питания от сети 220. Питание переключено на батарею", 56);
+            currentAlreadySent = true;
+            currentFineAlreadySent = false;
+        }
+    }
+
+    //Проверка датчика температуры масла
+    if (tOil == 0 || (tOil < 1 && tOil > -1)) {
+        oilCheck++;
+    } else {
+        oilCheck = 0;
+    }
+    if (oilCheck > 5) {
+        isSensorError = true;
+        fillErrorInfo(oilSensorError);
+        if (!oilAlreadySent) {
+            sendSms(u"Отказ датчика температуры масла. Система остановлена", 52);
+            oilAlreadySent = true;
+        }
+    }
+
+    //Проверка датчика температуры воды
+    if (tWater == 0 || (tWater < 1 && tWater > -1)) {
+        waterCheck++;
+    } else {
+        waterCheck = 0;
+    }
+    if (waterCheck > 5) {
+        isSensorError = true;
+        fillErrorInfo(waterSensorError);
+        if (!waterAlreadySent) {
+            sendSms(u"Отказ датчика температуры воды. Система остановлена", 51);
+            waterAlreadySent = true;
+        }
+    }
+
+    //Проверка датчика температуры форсунки
+    if (tInjector == 0 || (tInjector < 1 && tInjector > -1)) {
+        injectorCheck++;
+    } else {
+        injectorCheck = 0;
+    }
+    if (injectorCheck > 5) {
+        isSensorError = true;
+        fillErrorInfo(injectorSensorError);
+        if (!injectorAlreadySent) {
+            sendSms(u"Отказ датчика температуры форсунки. Система остановлена", 55);
+            injectorAlreadySent = true;
+        }
+    }
+
+    isNeedCheck = true;
 }
 
 int sort_desc(const void *cmp1, const void *cmp2) {
@@ -520,7 +688,7 @@ float getFilteredValue(float values[5]) {
 }
 
 void loop() {
-    if (iter > 4) {
+    if (iter > 3) {
         iter = 0;
     } else iter++;
 
@@ -536,6 +704,11 @@ void loop() {
     flame = digitalRead(FLAME_SENSOR);
     int floatLevel = digitalRead(FLOAT_LEVEL);
     int floatOverflow = digitalRead(FLOAT_OVERFLOW);
+
+    if (isNeedCheck) {
+        errorCheckTimer.after(10 * 1000, checkSensors);
+        isNeedCheck = false;
+    }
 
     if (isInfo) {
 
@@ -574,8 +747,8 @@ void loop() {
         }
 
 
-        // Если процесс запущен
-        if (start) {
+        // Если процесс запущен и датчики в норме
+        if (start && !isSensorError) {
 
             if (!floatLevel) { //Если уровень масла низкий
                 if (!pompIsOn) { //если помпа ещё не запущена
@@ -645,6 +818,9 @@ void loop() {
     }
 
     if (isMainMenu) {
+        if (isCurrentWarning) {
+            currentAlreadyShown = true;
+        }
         turnOffValve();
         turnOffIgnition();
         turnOffFan();
@@ -876,4 +1052,5 @@ void loop() {
     funTimer.update();
     ignitionTimer.update();
     oilPompTimer.update();
+    errorCheckTimer.update();
 }
