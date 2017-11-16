@@ -222,6 +222,13 @@ void setup() {
     pinMode(RELAY_IGNITION, OUTPUT);
     pinMode(RELAY_VALVE, OUTPUT);
 
+    digitalWrite(RELAY_OILPUMP, HIGH);
+    digitalWrite(RELAY_INJECTOR, HIGH);
+    digitalWrite(RELAY_HEATING, HIGH);
+    digitalWrite(RELAY_FAN, HIGH);
+    digitalWrite(RELAY_IGNITION, HIGH);
+    digitalWrite(RELAY_VALVE, HIGH);
+
     attachInterrupt(0, encoder, CHANGE);
     isInfo = true;
     isMainMenu = false;
@@ -285,7 +292,7 @@ void setup() {
     }
     notificationIsOn = (boolean) EEPROM.read(23);
 
-    curSensor.calibrate();
+//    curSensor.calibrate();
 }
 
 void getPhoneNumber() {
@@ -602,7 +609,7 @@ void checkFlame() { //Проверка наличия огня
 
 void checkSensors() {
     float current = curSensor.getCurrentDC();
-    if (current < 0.185) {
+    if (current < 0.07) {
         currentCheck++;
     } else {
         currentCheck = 0;
