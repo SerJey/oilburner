@@ -89,9 +89,9 @@ boolean notificationIsOn;
 float tOil;
 float tInjector;
 float tWater;
-float tOil5[5] = {0.0, 0.0, 0.0, 0.0, 0.0};
-float tInjector5[5] = {0.0, 0.0, 0.0, 0.0, 0.0};
-float tWater5[5] = {0.0, 0.0, 0.0, 0.0, 0.0};
+float tOilCur;
+float tInjectorCur;
+float tWaterCur;
 
 boolean ignitionAlreadySent;
 boolean oilAlreadySent;
@@ -140,6 +140,42 @@ String injectorSensorError[6] = {
         ""
 };
 
+String injectorOverheatSensorError[6] = {
+        "",
+        "       ОШИБКА!       ",
+        "      ПЕРЕГРЕВ       ",
+        "      ФОРСУНКИ       ",
+        "",
+        ""
+};
+
+String waterOverheatSensorError[6] = {
+        "",
+        "       ОШИБКА!       ",
+        "      ПЕРЕГРЕВ       ",
+        "        ВОДЫ         ",
+        "",
+        ""
+};
+
+String oilOverheatSensorError[6] = {
+        "",
+        "       ОШИБКА!       ",
+        "      ПЕРЕГРЕВ       ",
+        "        МАСЛА        ",
+        "",
+        ""
+};
+
+String oilOverflowSensorError[6] = {
+        "",
+        "       ОШИБКА!       ",
+        "       ПЕРЕЛИВ       ",
+        "        МАСЛА        ",
+        "",
+        ""
+};
+
 String currentWarning[6] = {
         "",
         "      ВНИМАНИЕ!      ",
@@ -148,8 +184,6 @@ String currentWarning[6] = {
         "       ОТ СЕТИ       ",
         ""
 };
-
-byte iter;
 
 int tempOilMin;
 int tempOilMax;
@@ -160,6 +194,7 @@ int tempWaterMax;
 
 Timer tempTimer;
 Timer funTimer;
+Timer purgeTimer;
 Timer ignitionTimer;
 Timer oilPompTimer;
 
@@ -505,17 +540,17 @@ void getTemp() {
         oilSensor.reset();
         oilSensor.skip();
         oilSensor.write(0xBE);         // Read Scratchpad
-        tOil5[iter] = convertTemperature(oilSensor);
+        tOilCur = convertTemperature(oilSensor);
 
         injectorSensor.reset();
         injectorSensor.skip();
         injectorSensor.write(0xBE);
-        tInjector5[iter] = convertTemperature(injectorSensor);
+        tInjectorCur = convertTemperature(injectorSensor);
 
         waterSensor.reset();
         waterSensor.skip();
         waterSensor.write(0xBE);
-        tWater5[iter] = convertTemperature(waterSensor);
+        tWaterCur = convertTemperature(waterSensor);
 
         isFirstPart = true;
         isSecondPart = false;
@@ -634,7 +669,7 @@ void checkSensors() {
     }
 
     //Проверка датчика температуры масла
-    if (tOil == 0 || (tOil < 1 && tOil > -1)) {
+    if (tOilCur == 0 || (tOilCur < 1 && tOilCur > -1)) {
         oilCheck++;
     } else {
         oilCheck = 0;
@@ -649,7 +684,7 @@ void checkSensors() {
     }
 
     //Проверка датчика температуры воды
-    if (tWater == 0 || (tWater < 1 && tWater > -1)) {
+    if (tWaterCur == 0 || (tWaterCur < 1 && tWaterCur > -1)) {
         waterCheck++;
     } else {
         waterCheck = 0;
@@ -664,7 +699,7 @@ void checkSensors() {
     }
 
     //Проверка датчика температуры форсунки
-    if (tInjector == 0 || (tInjector < 1 && tInjector > -1)) {
+    if (tInjectorCur == 0 || (tInjectorCur < 1 && tInjectorCur > -1)) {
         injectorCheck++;
     } else {
         injectorCheck = 0;
@@ -681,27 +716,13 @@ void checkSensors() {
     isNeedCheck = true;
 }
 
-int sort_desc(const void *cmp1, const void *cmp2) {
-    float a = *((float *) cmp1);
-    float b = *((float *) cmp2);
-    return a > b ? -1 : (a < b ? 1 : 0);
-}
-
-float getFilteredValue(float values[5]) {
-    int valuesLength = sizeof(values) / sizeof(values[0]);
-    // qsort - last parameter is a function pointer to the sort function
-    qsort(values, valuesLength, sizeof(values[0]), sort_desc);
-    return values[2];
-}
-
 void loop() {
-    if (iter > 3) {
-        iter = 0;
-    } else iter++;
-
-    tOil = getFilteredValue(tOil5);
-    tWater = getFilteredValue(tWater5);
-    tInjector = getFilteredValue(tInjector5);
+    float deltaOil = tOil - tOilCur;
+    float deltaWater = tWater - tWaterCur;
+    float deltaInjector = tInjector - tInjectorCur;
+    tOil = abs(deltaOil) > 50 ? tOil : tOilCur;
+    tWater = abs(deltaWater) > 50 ? tWater : tWaterCur;
+    tInjector = abs(deltaInjector) > 50 ? tInjector : tInjectorCur;
 
     //Read sensors
     int encoderClick = 0; //0 - кнопка не нажата; 1 - короткое нажатие; -1 - длительное нажатие
@@ -743,14 +764,26 @@ void loop() {
 
         if (floatOverflow) { //если перелив
             start = false;        //отключаем всё
+            isSensorError = true;
+            fillErrorInfo(oilOverflowSensorError);
         }
 
-        if (tInjector > 125) { // Если температура форсунки превышает 125 градусов
+        if (tInjector > 120) { // Если температура форсунки превышает 120 градусов
             start = false;
+            isSensorError = true;
+            fillErrorInfo(injectorOverheatSensorError);
         }
 
-        if (tOil > 125) { // Если температура масла превышает 125 градусов
+        if (tOil > 120) { // Если температура масла превышает 120 градусов
             start = false;
+            isSensorError = true;
+            fillErrorInfo(oilOverheatSensorError);
+        }
+
+        if (tWater > 95) { // Если температура воды превышает 95 градусов
+            start = false;
+            isSensorError = true;
+            fillErrorInfo(waterOverheatSensorError);
         }
 
 
@@ -785,10 +818,10 @@ void loop() {
                     ignition = true; //активируем
                     attempt++; // считаем попытки поджига
                     turnOnFan(); //включаем вентилятор
-                    turnOnIgnition(); //включаем реле поджига
                     turnOffValve(); //выключаем клапан
-                    funTimer.after(5 * 1000, turnOnValve); //через 5 секунд включим клапан
-                    ignitionTimer.after(10 * 1000, checkFlame); //через 10 секунд проверим наличие пламя
+                    purgeTimer.after(5 * 1000, turnOnIgnition); //через 5 секунд после продувки включаем поджиг
+                    funTimer.after(7 * 1000, turnOnValve); //через 7 секунд включим клапан
+                    ignitionTimer.after(17 * 1000, checkFlame); //через 17 секунд проверим наличие пламя
                 }
                 if (ignition && attempt == 0) {
                     if (flame) { //если нету огня
@@ -1057,6 +1090,7 @@ void loop() {
     getTemp();
     tempTimer.update();
     funTimer.update();
+    purgeTimer.update();
     ignitionTimer.update();
     oilPompTimer.update();
     errorCheckTimer.update();
