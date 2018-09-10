@@ -5,7 +5,7 @@ project(${PROJECT_NAME})
 
 set(${CMAKE_PROJECT_NAME}_SKETCH oilburner/oilburner.ino)
 set(${CMAKE_PROJECT_NAME}_BOARD mega)
-set(${CMAKE_PROJECT_NAME}_PORT COM6)
+set(${CMAKE_PROJECT_NAME}_PORT COM3)
 
 include_directories(${ARDUINO_SDK_PATH}/hardware/arduino/avr/cores/arduino)
 
