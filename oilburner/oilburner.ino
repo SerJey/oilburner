@@ -19,6 +19,7 @@
 #define RELAY_FAN       36
 #define RELAY_IGNITION  38
 #define RELAY_VALVE     40
+#define RELAY_VALVE_2   42
 
 // temperature sensors
 #define TEMP_OIL        24
@@ -55,6 +56,7 @@ volatile boolean isSetup;
 volatile boolean isTestMenu;
 volatile boolean isNotificationMenu;
 volatile boolean isPhoneSetup;
+volatile boolean isFuncMenu;
 
 volatile boolean isFirstPart;
 volatile boolean isSecondPart;
@@ -64,6 +66,7 @@ volatile boolean heatingIsOn;
 volatile boolean fanIsOn;
 volatile boolean injectorIsOn;
 volatile boolean valveIsOn;
+volatile boolean valve2IsOn;
 volatile boolean pompIsOn;
 
 ACS712 curSensor(ACS712_05B, CURRENT_SENSOR);
@@ -74,8 +77,9 @@ int selectedMenu = 0;
 int selectedSubMenu = 1;
 int selectedTestMenu = 0;
 int selectedNotifMenu = 0;
-String menu[6] = {"Температура масла", "Температура форсунки", "Температура воды", "Режим тестирования", "Оповещения",
-                  "Выход"};
+int selectedFuncMenu = 0;
+String menu[7] = {"Температура масла", "Температура форсунки", "Температура воды", "Режим тестирования", "Оповещения",
+                  "Функции", "Выход"};
 int tempVal;
 int tempMin;
 int tempMax;
@@ -85,6 +89,9 @@ byte phoneNumber[11];
 int numSelIndex = 0;
 byte tempNum = 0;
 boolean notificationIsOn;
+
+boolean injectorFuncIsOn;
+boolean waterFuncIsOn;
 
 float tOil;
 float tInjector;
@@ -193,7 +200,8 @@ int tempWaterMin;
 int tempWaterMax;
 
 Timer tempTimer;
-Timer funTimer;
+Timer valveTimer;
+Timer valve2Timer;
 Timer purgeTimer;
 Timer ignitionTimer;
 Timer oilPompTimer;
@@ -256,6 +264,7 @@ void setup() {
     pinMode(RELAY_FAN, OUTPUT);
     pinMode(RELAY_IGNITION, OUTPUT);
     pinMode(RELAY_VALVE, OUTPUT);
+    pinMode(RELAY_VALVE_2, OUTPUT);
 
     digitalWrite(RELAY_OILPUMP, HIGH);
     digitalWrite(RELAY_INJECTOR, HIGH);
@@ -263,6 +272,7 @@ void setup() {
     digitalWrite(RELAY_FAN, HIGH);
     digitalWrite(RELAY_IGNITION, HIGH);
     digitalWrite(RELAY_VALVE, HIGH);
+    digitalWrite(RELAY_VALVE_2, HIGH);
 
     attachInterrupt(0, encoder, CHANGE);
     isInfo = true;
@@ -326,6 +336,8 @@ void setup() {
         phoneNumber[i] = EEPROM.read(i + 12);
     }
     notificationIsOn = (boolean) EEPROM.read(23);
+    injectorFuncIsOn = (boolean) EEPROM.read(24);
+    waterFuncIsOn = (boolean) EEPROM.read(25);
 
 //    curSensor.calibrate();
 }
@@ -342,6 +354,11 @@ void saveNotificationSettings() {
         EEPROM.write(i + 12, phoneNumber[i]);
     }
     EEPROM.write(23, (byte) notificationIsOn);
+}
+
+void saveFunctionSettings() {
+    EEPROM.write(24, (byte) injectorFuncIsOn);
+    EEPROM.write(25, (byte) waterFuncIsOn);
 }
 
 void sendSms(const void *text, size_t len) {
@@ -390,49 +407,47 @@ void drawMenuItem(int x, int y, int draw, int selected, String text) {
     }
 }
 
-void displayMenu() {
+void displayLargeMenu(String menu[], int &selectedItemIndex, int &frameA, int &frameB, int &dif, int itemsSize) {
     u8g.firstPage();
-    if (selectedMenu > mainFrameB) {
-        mainDif = selectedMenu - 3;
-        mainFrameB = selectedMenu;
-        mainFrameA = mainFrameB - 3;
+    if (TurnDetected) {
+        selectedItemIndex += encDif;
+        TurnDetected = false;
     }
-    if (selectedMenu < mainFrameA) {
-        mainFrameA = selectedMenu;
-        mainFrameB = mainFrameA + 3;
-        mainDif = selectedMenu;
+
+    int lastItemIndex = itemsSize - 1;
+    if (selectedItemIndex > lastItemIndex) selectedItemIndex = 0;
+    if (selectedItemIndex < 0) selectedItemIndex = lastItemIndex;
+
+    if (selectedItemIndex > frameB) {
+        dif = selectedItemIndex - 3;
+        frameB = selectedItemIndex;
+        frameA = frameB - 3;
+    }
+    if (selectedItemIndex < frameA) {
+        frameA = selectedItemIndex;
+        frameB = frameA + 3;
+        dif = selectedItemIndex;
     }
     do {
-        for (int i = mainFrameA; i <= mainFrameB; i++) {
-            drawMenuItem(4, (((i - mainDif + 1) * 13) + 2), i, selectedMenu, menu[i]);
+        for (int i = frameA; i <= frameB; i++) {
+            drawMenuItem(4, ((((i - dif) + 1) * 13) + 2), i, selectedItemIndex, menu[i]);
         }
     } while (u8g.nextPage());
 }
 
-void displayTestMenu(String testMenu[]) {
+void displaySimpleMenu(String menu[], int &selectedItemIndex, int itemsSize) {
     u8g.firstPage();
-    if (selectedTestMenu > testFrameB) {
-        testDif = selectedTestMenu - 3;
-        testFrameB = selectedTestMenu;
-        testFrameA = testFrameB - 3;
+    if (TurnDetected) {
+        selectedItemIndex += encDif;
+        TurnDetected = false;
     }
-    if (selectedTestMenu < testFrameA) {
-        testFrameA = selectedTestMenu;
-        testFrameB = testFrameA + 3;
-        testDif = selectedTestMenu;
-    }
-    do {
-        for (int i = testFrameA; i <= testFrameB; i++) {
-            drawMenuItem(4, ((((i - testDif) + 1) * 13) + 2), i, selectedTestMenu, testMenu[i]);
-        }
-    } while (u8g.nextPage());
-}
 
-void displayNotificationMenu(String notifMenu[]) {
-    u8g.firstPage();
+    int lastItemIndex = itemsSize - 1;
+    if (selectedItemIndex > lastItemIndex) selectedItemIndex = 0;
+    if (selectedItemIndex < 0) selectedItemIndex = lastItemIndex;
     do {
-        for (int i = 0; i < 3; ++i) {
-            drawMenuItem(4, (((i + 1) * 13) + 2), i, selectedNotifMenu, notifMenu[i]);
+        for (int i = 0; i < itemsSize; ++i) {
+            drawMenuItem(4, (((i + 1) * 13) + 2), i, selectedItemIndex, menu[i]);
         }
     } while (u8g.nextPage());
 }
@@ -524,13 +539,17 @@ void getTemp() {
         oilSensor.skip();
         oilSensor.write(0x44);        // start conversion, use ds.write(0x44,1) with parasite power on at the end
 
-        injectorSensor.reset();
-        injectorSensor.skip();
-        injectorSensor.write(0x44);
+        if (injectorFuncIsOn) {
+            injectorSensor.reset();
+            injectorSensor.skip();
+            injectorSensor.write(0x44);
+        }
 
-        waterSensor.reset();
-        waterSensor.skip();
-        waterSensor.write(0x44);
+        if (waterFuncIsOn) {
+            waterSensor.reset();
+            waterSensor.skip();
+            waterSensor.write(0x44);
+        }
 
         tempTimer.after(1000, toggleSecondPart);
         isFirstPart = false;
@@ -542,15 +561,19 @@ void getTemp() {
         oilSensor.write(0xBE);         // Read Scratchpad
         tOilCur = convertTemperature(oilSensor);
 
-        injectorSensor.reset();
-        injectorSensor.skip();
-        injectorSensor.write(0xBE);
-        tInjectorCur = convertTemperature(injectorSensor);
+        if (injectorFuncIsOn) {
+            injectorSensor.reset();
+            injectorSensor.skip();
+            injectorSensor.write(0xBE);
+            tInjectorCur = convertTemperature(injectorSensor);
+        }
 
-        waterSensor.reset();
-        waterSensor.skip();
-        waterSensor.write(0xBE);
-        tWaterCur = convertTemperature(waterSensor);
+        if (waterFuncIsOn) {
+            waterSensor.reset();
+            waterSensor.skip();
+            waterSensor.write(0xBE);
+            tWaterCur = convertTemperature(waterSensor);
+        }
 
         isFirstPart = true;
         isSecondPart = false;
@@ -565,6 +588,16 @@ void turnOnValve() {
 void turnOffValve() {
     valveIsOn = false;
     digitalWrite(RELAY_VALVE, HIGH); //отключаем клапан
+}
+
+void turnOnSecondValve() {
+    valve2IsOn = true;
+    digitalWrite(RELAY_VALVE_2, LOW); //включаем клапан 2
+}
+
+void turnOffSecondValve() {
+    valve2IsOn = false;
+    digitalWrite(RELAY_VALVE_2, HIGH); //отключаем клапан 2
 }
 
 void turnOnPomp() {
@@ -621,6 +654,7 @@ void checkFlame() { //Проверка наличия огня
     turnOffIgnition();
     turnOffFan(); //Отключаем вентилятор
     turnOffValve(); //Отключаем клапан
+    turnOffSecondValve(); //Отключаем клапан 2
     if (attempt < 5) { //Если попыток меньше 5
         if (flame) { //если нету огня
             ignition = false;
@@ -630,6 +664,7 @@ void checkFlame() { //Проверка наличия огня
             attempt = 0;//обнуляем попытки
             turnOnFan(); //Включаем вентилятор
             turnOnValve(); //Включаем клапан
+            turnOnSecondValve(); //Включаем клапан 2
         }
     } else {
         needsRestart = true;
@@ -684,71 +719,86 @@ void checkSensors() {
     }
 
     //Проверка датчика температуры воды
-    if (tWaterCur == 0 || (tWaterCur < 1 && tWaterCur > -1)) {
-        waterCheck++;
-    } else {
-        waterCheck = 0;
-    }
-    if (waterCheck > 5) {
-        isSensorError = true;
-        fillErrorInfo(waterSensorError);
-        if (!waterAlreadySent) {
-            sendSms(u"Отказ датчика температуры воды. Система остановлена", 51);
-            waterAlreadySent = true;
+    if (waterFuncIsOn) {
+        if (tWaterCur == 0 || (tWaterCur < 1 && tWaterCur > -1)) {
+            waterCheck++;
+        } else {
+            waterCheck = 0;
+        }
+        if (waterCheck > 5) {
+            isSensorError = true;
+            fillErrorInfo(waterSensorError);
+            if (!waterAlreadySent) {
+                sendSms(u"Отказ датчика температуры воды. Система остановлена", 51);
+                waterAlreadySent = true;
+            }
         }
     }
 
     //Проверка датчика температуры форсунки
-    if (tInjectorCur == 0 || (tInjectorCur < 1 && tInjectorCur > -1)) {
-        injectorCheck++;
-    } else {
-        injectorCheck = 0;
-    }
-    if (injectorCheck > 5) {
-        isSensorError = true;
-        fillErrorInfo(injectorSensorError);
-        if (!injectorAlreadySent) {
-            sendSms(u"Отказ датчика температуры форсунки. Система остановлена", 55);
-            injectorAlreadySent = true;
+    if (injectorFuncIsOn) {
+        if (tInjectorCur == 0 || (tInjectorCur < 1 && tInjectorCur > -1)) {
+            injectorCheck++;
+        } else {
+            injectorCheck = 0;
+        }
+        if (injectorCheck > 5) {
+            isSensorError = true;
+            fillErrorInfo(injectorSensorError);
+            if (!injectorAlreadySent) {
+                sendSms(u"Отказ датчика температуры форсунки. Система остановлена", 55);
+                injectorAlreadySent = true;
+            }
         }
     }
 
     isNeedCheck = true;
 }
 
-void loop() {
-    float deltaOil = tOil - tOilCur;
-    float deltaWater = tWater - tWaterCur;
-    float deltaInjector = tInjector - tInjectorCur;
-    tOil = abs(deltaOil) > 50 ? tOil : tOilCur;
-    tWater = abs(deltaWater) > 50 ? tWater : tWaterCur;
-    tInjector = abs(deltaInjector) > 50 ? tInjector : tInjectorCur;
+void toggleInjectorFunc() {
+    injectorFuncIsOn = !injectorFuncIsOn;
+}
 
-    //Read sensors
+void toggleWaterFunc() {
+    waterFuncIsOn = !waterFuncIsOn;
+}
+
+void loop() {
     int encoderClick = 0; //0 - кнопка не нажата; 1 - короткое нажатие; -1 - длительное нажатие
     encoderBtn.Update();
     if (encoderBtn.clicks != 0) encoderClick = encoderBtn.clicks;
 
-    flame = digitalRead(FLAME_SENSOR);
-    int floatLevel = digitalRead(FLOAT_LEVEL);
-    int floatOverflow = digitalRead(FLOAT_OVERFLOW);
-
-    if (isNeedCheck) {
-        errorCheckTimer.after(10 * 1000, checkSensors);
-        isNeedCheck = false;
-    }
-
     if (isInfo) {
+        //Read sensors
+        float deltaOil = tOil - tOilCur;
+        float deltaWater = tWater - tWaterCur;
+        float deltaInjector = tInjector - tInjectorCur;
+        tOil = abs(deltaOil) > 50 ? tOil : tOilCur;
+        tWater = abs(deltaWater) > 50 ? tWater : tWaterCur;
+        tInjector = abs(deltaInjector) > 50 ? tInjector : tInjectorCur;
 
-        // Условия запуска горелки
-        if ((tWater != 0) && (tWater < tempWaterMin)) {// Если вода остыла, то запускаем процесс
-            start = true;
+        flame = digitalRead(FLAME_SENSOR);
+        int floatLevel = digitalRead(FLOAT_LEVEL);
+        int floatOverflow = digitalRead(FLOAT_OVERFLOW);
+
+        if (isNeedCheck) {
+            errorCheckTimer.after(10 * 1000, checkSensors);
+            isNeedCheck = false;
         }
 
-        if (tWater > tempWaterMax) { //если вода нагрелась
-            start = false;  //отключаем всё
-            ignition = false;
-            firstOilHeating = true; //при следующем старте будем ждать прогрева масла
+        // Условия запуска горелки
+        if (waterFuncIsOn) { //Если включен датчик температуры воды
+            if (tWater < tempWaterMin) {// Если вода остыла, то запускаем процесс
+                start = true;
+            }
+
+            if (tWater > tempWaterMax) { //если вода нагрелась
+                start = false;  //отключаем всё
+                ignition = false;
+                firstOilHeating = true; //при следующем старте будем ждать прогрева масла
+            }
+        } else { //Иначе стартуем процесс не обращая внимания на воду
+            start = true;
         }
 
         if (!floatLevel && firstStart) { //Если уровень масла низкий при первом запуске
@@ -768,7 +818,7 @@ void loop() {
             fillErrorInfo(oilOverflowSensorError);
         }
 
-        if (tInjector > 120) { // Если температура форсунки превышает 120 градусов
+        if (injectorFuncIsOn && tInjector > 120) { // Если температура форсунки превышает 120 градусов
             start = false;
             isSensorError = true;
             fillErrorInfo(injectorOverheatSensorError);
@@ -780,12 +830,11 @@ void loop() {
             fillErrorInfo(oilOverheatSensorError);
         }
 
-        if (tWater > 95) { // Если температура воды превышает 95 градусов
+        if (waterFuncIsOn && tWater > 95) { // Если температура воды превышает 95 градусов
             start = false;
             isSensorError = true;
             fillErrorInfo(waterOverheatSensorError);
         }
-
 
         // Если процесс запущен и датчики в норме
         if (start && !isSensorError) {
@@ -813,14 +862,17 @@ void loop() {
                 if (needsRestart) { //Если поджиг не удался
                     turnOffFan(); //Отключаем вентилятор
                     turnOffValve(); //Отключаем клапан
+                    turnOffSecondValve(); //Отключаем клапан 2
                 }
                 if (!ignition) { //Если поджиг не активирован
                     ignition = true; //активируем
                     attempt++; // считаем попытки поджига
                     turnOnFan(); //включаем вентилятор
                     turnOffValve(); //выключаем клапан
+                    turnOffSecondValve(); //выключаем клапан 2
                     purgeTimer.after(5 * 1000, turnOnIgnition); //через 5 секунд после продувки включаем поджиг
-                    funTimer.after(7 * 1000, turnOnValve); //через 7 секунд включим клапан
+                    valveTimer.after(7 * 1000, turnOnValve); //через 7 секунд включим клапан
+                    valve2Timer.after(40 * 1000, turnOnSecondValve); //TODO: ? через 40 секунд включим второй клапан
                     ignitionTimer.after(17 * 1000, checkFlame); //через 17 секунд проверим наличие пламя
                 }
                 if (ignition && attempt == 0) {
@@ -830,10 +882,12 @@ void loop() {
                 }
             }
 
-            if (tInjector != 0 && tInjector < tempInjectorMin) { //Если температура форсунки упала
-                turnOnInjector();               //включаем реле форсунки
-            } else if (tInjector != 0 && tInjector > tempInjectorMax) { //Если форсунка прогрета
-                turnOffInjector(); //отключаем реле форсунки
+            if (injectorFuncIsOn) {
+                if (tInjector != 0 && tInjector < tempInjectorMin) { //Если температура форсунки упала
+                    turnOnInjector();               //включаем реле форсунки
+                } else if (tInjector != 0 && tInjector > tempInjectorMax) { //Если форсунка прогрета
+                    turnOffInjector(); //отключаем реле форсунки
+                }
             }
         } else { //Если нет условий для процесса, выключаем всё
             if (!firstStart) {
@@ -844,7 +898,19 @@ void loop() {
             turnOffIgnition();
             turnOffFan();
             turnOffValve();
+            turnOffSecondValve();
         }
+
+        displayInfo();
+
+        getTemp();
+        tempTimer.update();
+        valveTimer.update();
+        valve2Timer.update();
+        purgeTimer.update();
+        ignitionTimer.update();
+        oilPompTimer.update();
+        errorCheckTimer.update();
     }
 
     if (encoderClick == -1 && isInfo) {
@@ -853,49 +919,37 @@ void loop() {
         isMainMenu = true;
     }
 
-    if (isInfo) {
-        displayInfo();
-    }
-
     if (isMainMenu) {
         if (isCurrentWarning) {
             currentAlreadyShown = true;
         }
         turnOffValve();
+        turnOffSecondValve();
         turnOffIgnition();
         turnOffFan();
         turnOffHeating();
         turnOffInjector();
         turnOffPomp();
-        if (TurnDetected) {
-            selectedMenu += encDif;
-            TurnDetected = false;
-        }
-        if (selectedMenu > 5) selectedMenu = 0;
-        if (selectedMenu < 0) selectedMenu = 5;
-        displayMenu();
+
+        displayLargeMenu(menu, selectedMenu, mainFrameA, mainFrameB, mainDif, 7);
         if (encoderClick == 1) {
             encoderClick = 0;
-            if (selectedMenu == 5) {
+            if (selectedMenu == 6) {
                 isInfo = true;
                 isMainMenu = false;
-                isSetupMenu = false;
-                isSetup = false;
-                isTestMenu = false;
             } else if (selectedMenu == 3) {
-                isSetupMenu = false;
                 isMainMenu = false;
                 isTestMenu = true;
             } else if (selectedMenu == 4) {
-                isSetupMenu = false;
                 isMainMenu = false;
-                isTestMenu = false;
                 isNotificationMenu = true;
                 getPhoneNumber();
+            } else if (selectedMenu == 5) {
+                isMainMenu = false;
+                isFuncMenu = true;
             } else {
                 isSetupMenu = true;
                 isMainMenu = false;
-                isTestMenu = false;
                 if (selectedMenu == 0) { //если настраиваем температуру масла
                     tempMin = tempOilMin;
                     tempMax = tempOilMax;
@@ -911,26 +965,19 @@ void loop() {
     }
 
     if (isTestMenu) {
-        if (TurnDetected && !isSetup) {
-            selectedTestMenu += encDif;
-            TurnDetected = false;
-        }
-        if (selectedTestMenu > 6) selectedTestMenu = 0;
-        if (selectedTestMenu < 0) selectedTestMenu = 6;
-
-        String testMenu[7] = {
+        String testMenu[8] = {
                 "Помпа        " + String(pompIsOn ? "вкл" : "выкл"),
                 "Форсунка     " + String(injectorIsOn ? "вкл" : "выкл"),
                 "Тен          " + String(heatingIsOn ? "вкл" : "выкл"),
                 "Вентилятор   " + String(fanIsOn ? "вкл" : "выкл"),
                 "Поджиг       " + String(ignitionIsOn ? "вкл" : "выкл"),
                 "Клапан       " + String(valveIsOn ? "вкл" : "выкл"),
+                "Клапан 2     " + String(valve2IsOn ? "вкл" : "выкл"),
                 "Выход"};
-
-        displayTestMenu(testMenu);
+        displayLargeMenu(testMenu, selectedTestMenu, testFrameA, testFrameB, testDif, 8);
         if (encoderClick == 1) {
             encoderClick = 0;
-            if (selectedTestMenu == 6) {
+            if (selectedTestMenu == 7) {
                 isMainMenu = true;
                 isTestMenu = false;
             } else if (selectedTestMenu == 0) {
@@ -969,17 +1016,17 @@ void loop() {
                 } else {
                     turnOnValve();
                 }
+            } else if (selectedTestMenu == 6) {
+                if (valve2IsOn) {
+                    turnOffSecondValve();
+                } else {
+                    turnOnSecondValve();
+                }
             }
         }
     }
 
     if (isNotificationMenu) {
-        if (TurnDetected && !isPhoneSetup) {
-            selectedNotifMenu += encDif;
-            TurnDetected = false;
-        }
-        if (selectedNotifMenu > 2) selectedNotifMenu = 0;
-        if (selectedNotifMenu < 0) selectedNotifMenu = 2;
         if (encoderClick == 1 && !isPhoneSetup) {
             encoderClick = 0;
             if (selectedNotifMenu == 0) {
@@ -1018,7 +1065,27 @@ void loop() {
                 "SMS оповещения: " + String(notificationIsOn ? " вкл" : "выкл"),
                 "Номер:   " + String(isPhoneSetup ? "" : phoneNumberStr),
                 "Сохранить"};
-        displayNotificationMenu(notifMenu);
+        displaySimpleMenu(notifMenu, selectedNotifMenu, 3);
+    }
+
+    if (isFuncMenu) {
+        if (encoderClick == 1) {
+            encoderClick = 0;
+            if (selectedFuncMenu == 2) {
+                saveFunctionSettings();
+                isFuncMenu = false;
+                isMainMenu = true;
+            } else if (selectedFuncMenu == 0) {
+                toggleInjectorFunc();
+            } else if (selectedFuncMenu == 1) {
+                toggleWaterFunc();
+            }
+        }
+        String funcMenu[3] = {
+                "Форсунка:       " + String(injectorFuncIsOn ? "вкл" : "выкл"),
+                "Датчик воды:    " + String(waterFuncIsOn ? "вкл" : "выкл"),
+                "Сохранить"};
+        displaySimpleMenu(funcMenu, selectedFuncMenu, 3);
     }
 
     if (isSetupMenu) {
@@ -1067,7 +1134,6 @@ void loop() {
                     tempVal = tempMax;
                 }
                 isSetup = true;
-                encoderClick = 0;
             }
 
         } else if (encoderClick == 1 && isSetup) {
@@ -1086,12 +1152,4 @@ void loop() {
             TurnDetected = false;
         }
     }
-
-    getTemp();
-    tempTimer.update();
-    funTimer.update();
-    purgeTimer.update();
-    ignitionTimer.update();
-    oilPompTimer.update();
-    errorCheckTimer.update();
 }
